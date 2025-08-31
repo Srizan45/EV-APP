@@ -104,7 +104,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
             'position': LatLng(lat, lng),
             'slots': data['total_slots'] ?? 0,
             'queue': data['latest_wait_time_minutes'] ?? 0,
-            'waitTime': 0.0, // You can calculate or update this later
+            'waitTime': data['latest_wait_time_minutes'] ?? 0, // You can calculate or update this later
             'name': data['name'] ?? 'Unknown',
             'powerKW': data['charging_rate']?.toDouble() ?? 0.0,
           });
@@ -230,60 +230,115 @@ class _HomePageFinalState extends State<HomePageFinal> {
     final _vehicleNumberController = TextEditingController();
     final _initialBatteryController = TextEditingController();
     final _targetBatteryController = TextEditingController();
+    final _chargingTimeController = TextEditingController();
+    final List<String> _chargingTypes = [
+      "AC Type 1",
+      "AC Type 2",
+      "CCS",
+      "CHAdeMO",
+      "GB/T"
+    ];
+    String selectedChargingType = _chargingTypes[0];
+    String selectedMode = 'battery'; // 'battery' or 'time'
 
     showDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Enter Vehicle Details'),
-        content: SingleChildScrollView(
-          child: Column(
-            children: [
-              TextField(
-                controller: _vehicleNumberController,
-                decoration: const InputDecoration(labelText: 'Vehicle Number'),
-              ),
-              TextField(
-                controller: _initialBatteryController,
-                decoration: const InputDecoration(labelText: 'Initial Battery (%)'),
-                keyboardType: TextInputType.number,
-              ),
-              TextField(
-                controller: _targetBatteryController,
-                decoration: const InputDecoration(labelText: 'Target Battery (%)'),
-                keyboardType: TextInputType.number,
-              ),
-            ],
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Enter Vehicle Details'),
+          content: SingleChildScrollView(
+            child: Column(
+              children: [
+                TextField(
+                  controller: _vehicleNumberController,
+                  decoration: const InputDecoration(labelText: 'Vehicle Number'),
+                ),
+                TextField(
+                  controller: _initialBatteryController,
+                  decoration: const InputDecoration(labelText: 'Initial Battery (%)'),
+                  keyboardType: TextInputType.number,
+                ),
+                DropdownButtonFormField<String>(
+                  value: selectedChargingType,
+                  items: _chargingTypes
+                      .map((type) => DropdownMenuItem(
+                    value: type,
+                    child: Text(type),
+                  ))
+                      .toList(),
+                  onChanged: (val) => setState(() => selectedChargingType = val!),
+                  decoration: const InputDecoration(labelText: 'Charging Type'),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: RadioListTile<String>(
+                        title: const Text('Target Battery (%)'),
+                        value: 'battery',
+                        groupValue: selectedMode,
+                        onChanged: (val) => setState(() => selectedMode = val!),
+                      ),
+                    ),
+                    Expanded(
+                      child: RadioListTile<String>(
+                        title: const Text('Charging Time (min)'),
+                        value: 'time',
+                        groupValue: selectedMode,
+                        onChanged: (val) => setState(() => selectedMode = val!),
+                      ),
+                    ),
+                  ],
+                ),
+                TextField(
+                  controller: _targetBatteryController,
+                  decoration: const InputDecoration(labelText: 'Target Battery (%)'),
+                  keyboardType: TextInputType.number,
+                  enabled: selectedMode == 'battery',
+                ),
+                TextField(
+                  controller: _chargingTimeController,
+                  decoration: const InputDecoration(labelText: 'Charging Time Available (min)'),
+                  keyboardType: TextInputType.number,
+                  enabled: selectedMode == 'time',
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () => Navigator.pop(dialogContext),
+            ),
+            ElevatedButton(
+              child: const Text('Confirm'),
+              onPressed: () async {
+                final vehicleData = {
+                  'vehicle_number': _vehicleNumberController.text.trim(),
+                  'initial_battery_level': int.tryParse(_initialBatteryController.text) ?? 0,
+                  'charging_type': selectedChargingType,
+                  'status': 'BOOKED',
+                  'timestamp': DateTime.now(),
+                };
+                if (selectedMode == 'battery') {
+                  vehicleData['target_battery_level'] = int.tryParse(_targetBatteryController.text) ?? 100;
+                } else {
+                  vehicleData['charging_time_available'] = int.tryParse(_chargingTimeController.text) ?? 0;
+                }
+
+                Navigator.pop(dialogContext);
+
+                await FirebaseFirestore.instance
+                    .collection('charging_stations')
+                    .doc(stationId)
+                    .collection('vehicles')
+                    .add(vehicleData);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Charger booked successfully!')),
+                );
+              },
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            child: const Text('Cancel'),
-            onPressed: () => Navigator.pop(dialogContext),
-          ),
-          ElevatedButton(
-            child: const Text('Confirm'),
-            onPressed: () async {
-              final vehicleData = {
-                'vehicle_number': _vehicleNumberController.text.trim(),
-                'initial_battery_level': int.tryParse(_initialBatteryController.text) ?? 0,
-                'target_battery_level': int.tryParse(_targetBatteryController.text) ?? 100,
-                'status': 'BOOKED',
-                'timestamp': DateTime.now(),
-              };
-
-              Navigator.pop(dialogContext);
-
-              await FirebaseFirestore.instance
-                  .collection('charging_stations')
-                  .doc(stationId)
-                  .collection('vehicles')
-                  .add(vehicleData);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Charger booked successfully!')),
-              );
-            },
-          ),
-        ],
       ),
     );
   }
