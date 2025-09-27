@@ -311,31 +311,49 @@ class _HomePageFinalState extends State<HomePageFinal> {
             ),
             ElevatedButton(
               child: const Text('Confirm'),
-              onPressed: () async {
-                final vehicleData = {
-                  'vehicle_number': _vehicleNumberController.text.trim(),
-                  'initial_battery_level': int.tryParse(_initialBatteryController.text) ?? 0,
-                  'charging_type': selectedChargingType,
-                  'status': 'BOOKED',
-                  'timestamp': DateTime.now(),
-                };
-                if (selectedMode == 'battery') {
-                  vehicleData['target_battery_level'] = int.tryParse(_targetBatteryController.text) ?? 100;
-                } else {
-                  vehicleData['charging_time_available'] = int.tryParse(_chargingTimeController.text) ?? 0;
+                onPressed: () async {
+                  // Fetch station position
+                  final stationDoc = await FirebaseFirestore.instance
+                      .collection('charging_stations')
+                      .doc(stationId)
+                      .get();
+                  final stationData = stationDoc.data();
+                  LatLng stationPosition = LatLng(
+                    stationData?['latitude'] ?? 0.0,
+                    stationData?['longitude'] ?? 0.0,
+                  );
+
+                  // Get route and ETA from Google Directions API
+                  final routeResult = await getRouteAndEta(_currentLocation!, stationPosition);
+                  final etaMinutes = routeResult['eta_minutes'] as int;
+                  final arrivalTime = DateTime.now().add(Duration(minutes: etaMinutes));
+
+                  final vehicleData = {
+                    'vehicle_number': _vehicleNumberController.text.trim(),
+                    'initial_battery_level': int.tryParse(_initialBatteryController.text) ?? 0,
+                    'charging_type': selectedChargingType,
+                    'status': 'BOOKED',
+                    'timestamp': DateTime.now(),
+                    'eta_minutes': etaMinutes,
+                    'arrival_time': arrivalTime,
+                  };
+                  if (selectedMode == 'battery') {
+                    vehicleData['target_battery_level'] = int.tryParse(_targetBatteryController.text) ?? 100;
+                  } else {
+                    vehicleData['charging_time_available'] = int.tryParse(_chargingTimeController.text) ?? 0;
+                  }
+
+                  Navigator.pop(dialogContext);
+
+                  await FirebaseFirestore.instance
+                      .collection('charging_stations')
+                      .doc(stationId)
+                      .collection('vehicles')
+                      .add(vehicleData);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Charger booked successfully!')),
+                  );
                 }
-
-                Navigator.pop(dialogContext);
-
-                await FirebaseFirestore.instance
-                    .collection('charging_stations')
-                    .doc(stationId)
-                    .collection('vehicles')
-                    .add(vehicleData);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Charger booked successfully!')),
-                );
-              },
             ),
           ],
         ),
@@ -556,6 +574,40 @@ class _HomePageFinalState extends State<HomePageFinal> {
       print('Route coordinates error: $e');
       // Don't show toast here - let the calling method handle it
       return [origin, destination]; // Return straight line fallback
+    }
+  }
+
+  Future<Map<String, dynamic>> getRouteAndEta(LatLng origin, LatLng destination) async {
+    final url = 'https://maps.googleapis.com/maps/api/directions/json?'
+        'origin=${origin.latitude},${origin.longitude}'
+        '&destination=${destination.latitude},${destination.longitude}'
+        '&key=$_apiKey';
+
+    final response = await http.get(Uri.parse(url));
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      if (data['status'] == 'OK') {
+        final route = data['routes'][0];
+        final leg = route['legs'][0];
+        final duration = leg['duration']['value']; // seconds
+        final etaMinutes = (duration / 60).round();
+
+        // Get polyline points as before
+        final overviewPolyline = route['overview_polyline']['points'];
+        final result = polylinePoints.decodePolyline(overviewPolyline);
+        final polylineCoordinates = result
+            .map((point) => LatLng(point.latitude, point.longitude))
+            .toList();
+
+        return {
+          'eta_minutes': etaMinutes,
+          'route_points': polylineCoordinates,
+        };
+      } else {
+        throw Exception('Google API Error: ${data['status']}');
+      }
+    } else {
+      throw Exception('HTTP Error: ${response.statusCode}');
     }
   }
 
