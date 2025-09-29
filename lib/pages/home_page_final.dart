@@ -80,7 +80,42 @@ class _HomePageFinalState extends State<HomePageFinal> {
   bool _isWaitTimeDialogShown = false;
   bool _isLoading = false;
 
+  // --- ADD THESE TWO VARIABLES ---
+  int _selectedRouteIndex = 0; // 0 is the best route by default
+  List<List<LatLng>> _cachedPolylinePoints = [];
+  // --- END ---
+
   final List<Map<String, dynamic>> _chargingStations = [];
+
+
+  void _updatePolylinesFromCache() {
+    if (!mounted) return;
+    _polylines.clear();
+
+    for (int i = 0; i < _cachedPolylinePoints.length; i++) {
+      final polylinePoints = _cachedPolylinePoints[i];
+
+      _polylines.add(
+        Polyline(
+          polylineId: PolylineId('route_$i'),
+          points: polylinePoints,
+          color: i == _selectedRouteIndex ? Colors.blue : const Color.fromARGB(255, 207, 206, 206),
+          width: 6,
+          zIndex: i == _selectedRouteIndex ? 2 : 1,
+          consumeTapEvents: true, // <-- Ensure this is
+          onTap: () {
+          setState(() {
+              _selectedRouteIndex = i;
+              _updatePolylinesFromCache(); // Redraw polylines with new colors
+            });
+          },
+
+        ),
+      );
+    }
+    setState(() {});
+  }
+
   void fetchStationsFromFirestore() async {
     try {
       final snapshot = await FirebaseFirestore.instance
@@ -114,9 +149,10 @@ class _HomePageFinalState extends State<HomePageFinal> {
       }
 
       setState(() {
-        _chargingStations.clear(); // Clear hardcoded stations if needed
+        _chargingStations.clear();
         _chargingStations.addAll(stations);
-        _updateMarkers();
+        // Only update markers via _addChargingStationMarkers to ensure green, interactive markers
+        _updateChargingStationMarkers();
       });
 
     } catch (e) {
@@ -128,21 +164,51 @@ class _HomePageFinalState extends State<HomePageFinal> {
     }
   }
 
+  // Remove _updateMarkers() usage for charging stations, and use _addChargingStationMarkers instead
   void _updateMarkers() {
     _markers.clear();
+    // Only add current location marker here
+    if (_currentLocation != null) {
+      _markers.add(Marker(
+        markerId: const MarkerId('currentLocation'),
+        position: _currentLocation!,
+        infoWindow: const InfoWindow(title: 'Your Location'),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      ));
+    }
+    // Do NOT add charging station markers here
+    setState(() {});
+  }
+
+  void _addChargingStationMarkers() {
+    print('Adding charging station markers');
+    // Remove all existing charging station markers first
+    _markers.removeWhere((m) => m.markerId.value.startsWith('charging_station_') || m.markerId.value.startsWith('station_'));
     for (var station in _chargingStations) {
-      _markers.add(
-        Marker(
-          markerId: MarkerId(station['name']),
-          position: station['position'],
-          infoWindow: InfoWindow(
-            title: station['name'],
-            snippet: 'Slots: ${station['slots']}, Charging Rate: ${station['powerKW']} kW',
-          ),
+      _markers.add(Marker(
+        markerId: MarkerId('charging_station_${station['station_id']}'),
+        position: station['position'],
+        infoWindow: InfoWindow(
+          title: station['name'],
+          snippet:
+              'Slots: ${station['slots']}, Wait: ${station['waitTime']} min, Queue: ${station['queue']}, Power: ${station['powerKW']} kW',
+          onTap: () {
+            _onChargingStationTapped(station);
+          },
         ),
-      );
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+        onTap: () {
+          _onChargingStationTapped(station);
+        },
+      ));
     }
     setState(() {});
+  }
+
+  void _updateChargingStationMarkers() {
+    print('Updating charging station markers');
+    _markers.removeWhere((m) => m.markerId.value.startsWith('charging_station_') || m.markerId.value.startsWith('station_'));
+    _addChargingStationMarkers();
   }
 
   Future<void> _requestLocationPermission() async {
@@ -179,25 +245,30 @@ class _HomePageFinalState extends State<HomePageFinal> {
     }
   }
 
-  void _addChargingStationMarkers() {
-    print('Adding charging station markers');
-    for (var station in _chargingStations) {
-      _markers.add(Marker(
-        markerId: MarkerId(station['name']),
-        position: station['position'],
-        infoWindow: InfoWindow(
-          title: station['name'],
-          snippet:
-              'Slots: ${station['slots']}, Wait: ${station['waitTime']} min, Queue: ${station['queue']}, Power: ${station['powerKW']} kW',
-          onTap: () {
-            _onChargingStationTapped(station); // <-- Add this function
-          },
-        ),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-      ));
-    }
-    setState(() {});
-  }
+  // void _addChargingStationMarkers() {
+  //   print('Adding charging station markers');
+  //   // Remove all existing charging station markers first
+  //   _markers.removeWhere((m) => m.markerId.value.startsWith('charging_station_') || m.markerId.value.startsWith('station_'));
+  //   for (var station in _chargingStations) {
+  //     _markers.add(Marker(
+  //       markerId: MarkerId('charging_station_${station['station_id']}'),
+  //       position: station['position'],
+  //       infoWindow: InfoWindow(
+  //         title: station['name'],
+  //         snippet:
+  //             'Slots: ${station['slots']}, Wait: ${station['waitTime']} min, Queue: ${station['queue']}, Power: ${station['powerKW']} kW',
+  //         onTap: () {
+  //           _onChargingStationTapped(station);
+  //         },
+  //       ),
+  //       icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+  //       onTap: () {
+  //         _onChargingStationTapped(station);
+  //       },
+  //     ));
+  //   }
+  //   setState(() {});
+  // }
   void _onChargingStationTapped(Map<String, dynamic> station) {
     print('Charging station clicked');
     showModalBottomSheet(
@@ -464,11 +535,11 @@ class _HomePageFinalState extends State<HomePageFinal> {
 //   _updateChargingStationMarkers();
 // }
 
-  void _updateChargingStationMarkers() {
-    print('Updating charging station markers');
-    _markers.removeWhere((m) => m.markerId.value.contains('charging_station'));
-    _addChargingStationMarkers();
-  }
+  // void _updateChargingStationMarkers() {
+  //   print('Updating charging station markers');
+  //   _markers.removeWhere((m) => m.markerId.value.startsWith('charging_station_') || m.markerId.value.startsWith('station_'));
+  //   _addChargingStationMarkers();
+  // }
 
   double _calculateRange() {
     if (_socValue.isEmpty) return _maxRange;
@@ -495,21 +566,26 @@ class _HomePageFinalState extends State<HomePageFinal> {
   void _filterStationsByRange() {
     print('Filtering stations by range');
     final range = _calculateRange();
-    _markers.removeWhere((m) => m.markerId.value.contains('charging_station'));
+    _markers.removeWhere((m) => m.markerId.value.startsWith('charging_station_') || m.markerId.value.startsWith('station_'));
     for (var station in _chargingStations) {
       final distance =
           _calculateHaversineDistance(_currentLocation!, station['position']);
       if (distance <= range) {
         _markers.add(Marker(
-          markerId: MarkerId('charging_station_${station['position']}'),
+          markerId: MarkerId('charging_station_${station['station_id']}'),
           position: station['position'],
           infoWindow: InfoWindow(
             title: station['name'],
             snippet:
                 'Slots: ${station['slots']}, Wait: ${station['waitTime']} min, Queue: ${station['queue']}',
+            onTap: () {
+              _onChargingStationTapped(station);
+            },
           ),
-          icon:
-              BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
+          onTap: () {
+            _onChargingStationTapped(station);
+          },
         ));
       }
     }
@@ -705,77 +781,77 @@ class _HomePageFinalState extends State<HomePageFinal> {
     return result;
   }
 
-  Future<void> _drawOptimalRoute(
-      List<Map<String, dynamic>> optimalRoute) async {
-    _polylines.clear();
-    _markers.removeWhere((m) => m.markerId.value.contains('bestStation'));
-
-    final allPoints = <LatLng>[_currentLocation!];
-    for (var i = 0; i < optimalRoute.length; i++) {
-      final station = optimalRoute[i];
-      allPoints.add(station['position']);
-      _markers.add(Marker(
-        markerId: MarkerId('bestStation_$i'),
-        position: station['position'],
-        infoWindow: InfoWindow(
-            title: 'Stop ${i + 1}: ${station['name']}',
-            snippet:
-                'Wait: ${station['waitTime']} min, Queue: ${station['queue']}'),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
-      ));
-    }
-    allPoints.add(_destinationLocation!);
-
-    final fullRoute = <LatLng>[];
-    bool anyRouteFailed = false;
-
-    for (var i = 0; i < allPoints.length - 1; i++) {
-      try {
-        print('Getting route segment ${i + 1}/${allPoints.length - 1}');
-        final segment =
-            await _getRouteCoordinates(allPoints[i], allPoints[i + 1]);
-
-        // Check if we got a real route or just straight line fallback
-        if (segment.length > 2) {
-          fullRoute.addAll(segment);
-        } else {
-          // It's a straight line fallback
-          fullRoute.addAll(segment);
-          anyRouteFailed = true;
-        }
-
-        // Add delay between API calls
-        if (i < allPoints.length - 2) {
-          await Future.delayed(const Duration(milliseconds: 500));
-        }
-      } catch (e) {
-        print('Error getting route segment $i: $e');
-        // Add straight line for failed segment
-        fullRoute.addAll([allPoints[i], allPoints[i + 1]]);
-        anyRouteFailed = true;
-      }
-    }
-
-    setState(() {
-      _polylines.add(Polyline(
-          polylineId: const PolylineId('route'),
-          points: fullRoute,
-          color: Colors.blue,
-          width: 5));
-    });
-
-    _fitRouteBounds(allPoints);
-
-    // Show appropriate message
-    if (anyRouteFailed) {
-      _alertService.showToast(
-          text: 'Route shown with some straight-line segments',
-          icon: Icons.warning);
-    } else {
-      _alertService.showToast(
-          text: 'Route optimized successfully', icon: Icons.check);
-    }
-  }
+  // Future<void> _drawOptimalRoute(
+  //     List<Map<String, dynamic>> optimalRoute) async {
+  //   _polylines.clear();
+  //   _markers.removeWhere((m) => m.markerId.value.contains('bestStation'));
+  //
+  //   final allPoints = <LatLng>[_currentLocation!];
+  //   for (var i = 0; i < optimalRoute.length; i++) {
+  //     final station = optimalRoute[i];
+  //     allPoints.add(station['position']);
+  //     _markers.add(Marker(
+  //       markerId: MarkerId('bestStation_$i'),
+  //       position: station['position'],
+  //       infoWindow: InfoWindow(
+  //           title: 'Stop ${i + 1}: ${station['name']}',
+  //           snippet:
+  //               'Wait: ${station['waitTime']} min, Queue: ${station['queue']}'),
+  //       icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+  //     ));
+  //   }
+  //   allPoints.add(_destinationLocation!);
+  //
+  //   final fullRoute = <LatLng>[];
+  //   bool anyRouteFailed = false;
+  //
+  //   for (var i = 0; i < allPoints.length - 1; i++) {
+  //     try {
+  //       print('Getting route segment ${i + 1}/${allPoints.length - 1}');
+  //       final segment =
+  //           await _getRouteCoordinates(allPoints[i], allPoints[i + 1]);
+  //
+  //       // Check if we got a real route or just straight line fallback
+  //       if (segment.length > 2) {
+  //         fullRoute.addAll(segment);
+  //       } else {
+  //         // It's a straight line fallback
+  //         fullRoute.addAll(segment);
+  //         anyRouteFailed = true;
+  //       }
+  //
+  //       // Add delay between API calls
+  //       if (i < allPoints.length - 2) {
+  //         await Future.delayed(const Duration(milliseconds: 500));
+  //       }
+  //     } catch (e) {
+  //       print('Error getting route segment $i: $e');
+  //       // Add straight line for failed segment
+  //       fullRoute.addAll([allPoints[i], allPoints[i + 1]]);
+  //       anyRouteFailed = true;
+  //     }
+  //   }
+  //
+  //   setState(() {
+  //     _polylines.add(Polyline(
+  //         polylineId: const PolylineId('route'),
+  //         points: fullRoute,
+  //         color: Colors.blue,
+  //         width: 5));
+  //   });
+  //
+  //   _fitRouteBounds(allPoints);
+  //
+  //   // Show appropriate message
+  //   if (anyRouteFailed) {
+  //     _alertService.showToast(
+  //         text: 'Route shown with some straight-line segments',
+  //         icon: Icons.warning);
+  //   } else {
+  //     _alertService.showToast(
+  //         text: 'Route optimized successfully', icon: Icons.check);
+  //   }
+  // }
 // The NEW core function that gets ALL routes
   Future<List<List<LatLng>>> _fetchAndDecodeRoutes(
       LatLng origin, LatLng destination) async {
@@ -815,37 +891,37 @@ class _HomePageFinalState extends State<HomePageFinal> {
 
 
   // A NEW function specifically for showing alternative routes on the map
-  Future<void> _displayAlternativeRoutes(LatLng start, LatLng end) async {
-    final allRoutes = await _fetchAndDecodeRoutes(start, end);
-
-    // Clear any previous alternative polylines
-    _polylines.removeWhere((p) => p.polylineId.value.contains('alternative'));
-
-    setState(() {
-
-      // the second-best route in grey
-      if (allRoutes.length > 1) {
-        _polylines.add(Polyline(
-          polylineId: const PolylineId('alternative_1'),
-          points: allRoutes[1],
-          color: Colors.grey,
-          width: 4,
-          zIndex: 1,
-        ));
-      }
-
-      // the third-best route in a lighter grey
-      if (allRoutes.length > 2) {
-        _polylines.add(Polyline(
-          polylineId: const PolylineId('alternative_2'),
-          points: allRoutes[2],
-          color: Colors.grey.shade400,
-          width: 4,
-          zIndex: 1,
-        ));
-      }
-    });
-  }
+  // Future<void> _displayAlternativeRoutes(LatLng start, LatLng end) async {
+  //   final allRoutes = await _fetchAndDecodeRoutes(start, end);
+  //
+  //   // Clear any previous alternative polylines
+  //   _polylines.removeWhere((p) => p.polylineId.value.contains('alternative'));
+  //
+  //   setState(() {
+  //
+  //     // the second-best route in grey
+  //     if (allRoutes.length > 1) {
+  //       _polylines.add(Polyline(
+  //         polylineId: const PolylineId('alternative_1'),
+  //         points: allRoutes[1],
+  //         color: Colors.grey,
+  //         width: 4,
+  //         zIndex: 1,
+  //       ));
+  //     }
+  //
+  //     // the third-best route in a lighter grey
+  //     if (allRoutes.length > 2) {
+  //       _polylines.add(Polyline(
+  //         polylineId: const PolylineId('alternative_2'),
+  //         points: allRoutes[2],
+  //         color: Colors.grey.shade400,
+  //         width: 4,
+  //         zIndex: 1,
+  //       ));
+  //     }
+  //   });
+  // }
   /// Fits the map camera to show all points in the route.
   void _fitRouteBounds(List<LatLng> points) {
     if (_mapController == null || points.isEmpty) return;
@@ -888,68 +964,59 @@ class _HomePageFinalState extends State<HomePageFinal> {
   //Function to alternate optimal routes
   Future<void> _drawMultipleOptimalRoutes(
       List<List<Map<String, dynamic>>> optimalRoutes) async {
-    _polylines.clear();
+    // Clear previous markers and caches
     _markers.removeWhere((m) => m.markerId.value.contains('bestStation'));
+    _cachedPolylinePoints.clear();
+    setState(() {
+      _selectedRouteIndex = 0; // Reset to the best route
+    });
 
-    // Define distinct colors for the routes
-    final routeColors = [ Colors.blue, const Color.fromARGB(255, 157, 161, 163), const Color.fromARGB(255, 199, 197, 197), ];
-
+    final routesToDraw = optimalRoutes.take(3).toList();
     final allRoutePoints = <LatLng>{_currentLocation!, _destinationLocation!};
-    bool anyRouteFailed = false;
 
-    // We use .take(2) here to ensure we only draw the top two routes from the list.
-    final routesToDraw = optimalRoutes.take(3);
-
-    int routeIndex = 0;
-    for (final route in routesToDraw) {
-      final color = routeColors[routeIndex % routeColors.length];
+    for (int i = 0; i < routesToDraw.length; i++) {
+      final route = routesToDraw[i];
       final List<LatLng> waypoints = [_currentLocation!];
 
-      int stopIndex = 0;
-      for (final station in route) {
+      // Add station markers for this route
+      for (int j = 0; j < route.length; j++) {
+        final station = route[j];
         waypoints.add(station['position']);
         allRoutePoints.add(station['position']);
         _markers.add(Marker(
-          markerId: MarkerId('bestStation_${routeIndex}_${stopIndex}'),
+          markerId: MarkerId('bestStation_${i}_${j}'),
           position: station['position'],
           infoWindow: InfoWindow(
-              title: 'Route ${routeIndex + 1}, Stop ${stopIndex + 1}: ${station['name']}'),
+              title: 'Route ${i + 1}, Stop ${j + 1}: ${station['name']}'),
           icon: BitmapDescriptor.defaultMarkerWithHue(
-              (BitmapDescriptor.hueBlue + (routeIndex * 40)) % 360),
+              (BitmapDescriptor.hueBlue + (i * 40)) % 360),
         ));
-        stopIndex++;
       }
       waypoints.add(_destinationLocation!);
 
+      // --- FETCH AND CACHE LOGIC ---
       final List<LatLng> fullRoutePolylinePoints = [];
       for (var k = 0; k < waypoints.length - 1; k++) {
         try {
           final segment = await _getRouteCoordinates(waypoints[k], waypoints[k + 1]);
           fullRoutePolylinePoints.addAll(segment);
-          if (segment.length <= 2) anyRouteFailed = true;
-          await Future.delayed(const Duration(milliseconds: 500));
         } catch (e) {
-          anyRouteFailed = true;
+          print('Error getting route segment $k for route $i: $e');
           fullRoutePolylinePoints.addAll([waypoints[k], waypoints[k + 1]]);
         }
       }
-
-      _polylines.add(Polyline(
-        polylineId: PolylineId('route_$routeIndex'),
-        points: fullRoutePolylinePoints,
-        color: color,
-        width: 6,
-        zIndex: routesToDraw.length - routeIndex, // Best route on top
-      ));
-      routeIndex++;
+      _cachedPolylinePoints.add(fullRoutePolylinePoints);
     }
 
-    setState(() {});
+    // Fit map to show all points
     if (allRoutePoints.isNotEmpty) _fitRouteBounds(allRoutePoints.toList());
+
+    // Perform the initial drawing from the newly populated cache
+    _updatePolylinesFromCache();
 
     _alertService.showToast(
         text: 'Displaying top ${routesToDraw.length} charging routes.', icon: Icons.check);
-    if(anyRouteFailed) _alertService.showToast(text: "Could not fetch all route details.", icon: Icons.warning);
+    // if(anyRouteFailed) _alertService.showToast(text: "Could not fetch all route details.", icon: Icons.warning);
   }
 
   Future<void> _optimizeRoute() async {
@@ -970,26 +1037,34 @@ class _HomePageFinalState extends State<HomePageFinal> {
       final totalDistance =
           _calculateHaversineDistance(_currentLocation!, _destinationLocation!);
 
-      if (totalDistance <= initialRange) {
-        print('Direct route possible, no charging needed');
-        final routePoints = await _getRouteCoordinates(
-            _currentLocation!, _destinationLocation!);
-        setState(() {
-          _polylines.clear();
-          _polylines.add(Polyline(
-            polylineId: const PolylineId('direct_route'),
-            points: routePoints,
-            color: Colors.blue,
-            width: 5,
-            zIndex: 2,
-          ));
-          _alertService.showToast(
-              text: 'Direct route possible, no charging needed',
-              icon: Icons.check);
-        });
-        await _displayAlternativeRoutes(_currentLocation!, _destinationLocation!);
+      // --- WITH THIS NEW BLOCK ---
+if (totalDistance <= initialRange) {
+    print('Direct route possible, displaying alternatives.');
 
-      } else {
+    // 1. Fetch all alternative routes at once.
+    final allRoutes = await _fetchAndDecodeRoutes(_currentLocation!, _destinationLocation!);
+    if (allRoutes.isEmpty) {
+        _alertService.showToast(text: 'Could not find a route.', icon: Icons.error);
+        return;
+    }
+
+    // 2. Clear previous data and populate the cache with the new routes.
+    _polylines.clear();
+    _markers.removeWhere((m) => m.markerId.value.contains('bestStation'));
+    _cachedPolylinePoints = allRoutes;
+    setState(() {
+      _selectedRouteIndex = 0; // Default selection to the best route (index 0)
+    });
+
+    // 3. Use our existing universal function to draw all routes interactively.
+    _updatePolylinesFromCache();
+
+    // Adjust camera and show a confirmation message
+    _fitRouteBounds([_currentLocation!, _destinationLocation!]);
+    _alertService.showToast(
+        text: 'Direct routes displayed. Tap to select one.',
+        icon: Icons.check);
+    } else {
         print('Need charging stations for route');
 
         // Call the refactored function. It now returns a sorted list.
@@ -998,7 +1073,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
 
         if (optimalRoutes.isEmpty) {
           _alertService.showToast(
-              text: 'No viable route found with current battery',
+              text: 'No viable charging routes found with current battery',
               icon: Icons.error);
           setState(() => _isLoading = false);
           return;
@@ -1132,9 +1207,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
             ListTile(
               title: const Text('Show All Charging Stations'),
               onTap: () {
-                _markers.removeWhere(
-                    (m) => m.markerId.value.contains('charging_station'));
-                _addChargingStationMarkers();
+                _updateChargingStationMarkers();
                 Navigator.pop(context);
               },
             ),
@@ -1185,7 +1258,6 @@ class _HomePageFinalState extends State<HomePageFinal> {
         setState(() {
           _isMapReady = true;
           _addChargingStationMarkers();
-          // Future.delayed(const Duration(seconds: 1), _showWaitTimeDialog);
         });
         print('Map created');
       },
@@ -1203,6 +1275,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
       onTap: _onMarkerSelected,
       markers: _markers,
       polylines: _polylines,
+      // Remove onPolylineTapped
     );
   }
 }
