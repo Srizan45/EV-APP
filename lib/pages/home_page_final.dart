@@ -231,6 +231,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
     final _initialBatteryController = TextEditingController();
     final _targetBatteryController = TextEditingController();
     final _chargingTimeController = TextEditingController();
+    final _vehicleCapacityController = TextEditingController(); // <-- Add controller
     final List<String> _chargingTypes = [
       "AC Type 1",
       "AC Type 2",
@@ -258,6 +259,13 @@ class _HomePageFinalState extends State<HomePageFinal> {
                   decoration: const InputDecoration(labelText: 'Initial Battery (%)'),
                   keyboardType: TextInputType.number,
                 ),
+                // --- Add vehicle capacity field here ---
+                TextField(
+                  controller: _vehicleCapacityController,
+                  decoration: const InputDecoration(labelText: 'Vehicle Capacity (kWh)'),
+                  keyboardType: TextInputType.number,
+                ),
+                // --- End addition ---
                 DropdownButtonFormField<String>(
                   value: selectedChargingType,
                   items: _chargingTypes
@@ -331,6 +339,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
                   final vehicleData = {
                     'vehicle_number': _vehicleNumberController.text.trim(),
                     'initial_battery_level': int.tryParse(_initialBatteryController.text) ?? 0,
+                    'vehicle_capacity': double.tryParse(_vehicleCapacityController.text) ?? 0, // <-- Add this line
                     'charging_type': selectedChargingType,
                     'status': 'BOOKED',
                     'timestamp': DateTime.now(),
@@ -618,18 +627,21 @@ class _HomePageFinalState extends State<HomePageFinal> {
     return energyNeededKWh / chargerPowerKW;
   }
 
-  List<Map<String, dynamic>> _findOptimalChargingRoute(
+  // --- REFACTORED FUNCTION ---
+  List<List<Map<String, dynamic>>> _findOptimalChargingRoute(
       LatLng start, LatLng end, double initialRange) {
     final totalDistance = _calculateHaversineDistance(start, end);
+    // Return an empty list early if no charging is needed or route is direct.
     if (totalDistance <= initialRange) return [];
 
-    List<Map<String, dynamic>> bestRoute = [];
-    double bestScore = double.infinity;
+    // This list will store route 'objects' with both the route and its score.
+    List<Map<String, dynamic>> rankedRoutes = [];
     const maxStops = 3;
 
     for (var stopCount = 1; stopCount <= maxStops; stopCount++) {
       final allCombinations =
-          _generateCombinations(_chargingStations, stopCount);
+        _generateCombinations(_chargingStations, stopCount);
+
       for (var combination in allCombinations) {
         var currentRange = initialRange;
         var currentPoint = start;
@@ -638,7 +650,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
 
         for (var station in combination) {
           final distToStation =
-              _calculateHaversineDistance(currentPoint, station['position']);
+            _calculateHaversineDistance(currentPoint, station['position']);
           if (distToStation > currentRange) {
             feasible = false;
             break;
@@ -646,7 +658,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
           final waitTimeHours = station['waitTime'] / 60;
           final queueTimeHours = station['queue'] * 0.5 / 60; // 30 min per car
           final chargingTimeHours =
-              _calculateChargingTime(20, 80, station['powerKW']);
+            _calculateChargingTime(20, 80, station['powerKW']);
           totalTime += distToStation / 60 +
               waitTimeHours +
               queueTimeHours +
@@ -657,16 +669,26 @@ class _HomePageFinalState extends State<HomePageFinal> {
         }
 
         final distToEnd = _calculateHaversineDistance(currentPoint, end);
-        if (distToEnd > currentRange) feasible = false;
-        totalTime += distToEnd / 60;
+        if (distToEnd > currentRange) {
+          feasible = false;
+        }
 
-        if (feasible && totalTime < bestScore) {
-          bestScore = totalTime;
-          bestRoute = combination.toList();
+        // If the combination is feasible, add it to our list with its score.
+        if (feasible) {
+          totalTime += distToEnd / 60;
+          rankedRoutes.add({
+            'route': combination.toList(),
+            'score': totalTime,
+          });
         }
       }
     }
-    return bestRoute;
+
+    // Sort the entire list of feasible routes by score (lowest is best).
+    rankedRoutes.sort((a, b) => a['score'].compareTo(b['score']));
+
+    // Extract just the route data and return it.
+    return rankedRoutes.map<List<Map<String, dynamic>>>((r) => r['route']).toList();
   }
 
   List<List<Map<String, dynamic>>> _generateCombinations(
@@ -754,7 +776,76 @@ class _HomePageFinalState extends State<HomePageFinal> {
           text: 'Route optimized successfully', icon: Icons.check);
     }
   }
+// The NEW core function that gets ALL routes
+  Future<List<List<LatLng>>> _fetchAndDecodeRoutes(
+      LatLng origin, LatLng destination) async {
+    try {
+      final url = 'https://maps.googleapis.com/maps/api/directions/json?'
+          'origin=${origin.latitude},${origin.longitude}'
+          '&destination=${destination.latitude},${destination.longitude}'
+          '&alternatives=true'
+          '&key=$_apiKey';
 
+      final response = await http.get(Uri.parse(url));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body) as Map<String, dynamic>;
+        if (data['status'] == 'OK') {
+          final List<List<LatLng>> allRoutesCoordinates = [];
+          final routes = data['routes'] as List<dynamic>;
+
+          for (int i = 0; i < routes.length && i < 3; i++) {
+            final points = routes[i]['overview_polyline']['points'] as String;
+            final result = polylinePoints.decodePolyline(points);
+            if (result.isNotEmpty) {
+              allRoutesCoordinates.add(result
+                  .map((point) => LatLng(point.latitude, point.longitude))
+                  .toList());
+            }
+          }
+          return allRoutesCoordinates;
+        }
+      }
+    } catch (e) {
+      print('Error fetching and decoding routes: $e');
+    }
+    // Return a single straight-line route as a fallback in case of any error
+    return [[origin, destination]];
+  }
+
+
+  // A NEW function specifically for showing alternative routes on the map
+  Future<void> _displayAlternativeRoutes(LatLng start, LatLng end) async {
+    final allRoutes = await _fetchAndDecodeRoutes(start, end);
+
+    // Clear any previous alternative polylines
+    _polylines.removeWhere((p) => p.polylineId.value.contains('alternative'));
+
+    setState(() {
+
+      // the second-best route in grey
+      if (allRoutes.length > 1) {
+        _polylines.add(Polyline(
+          polylineId: const PolylineId('alternative_1'),
+          points: allRoutes[1],
+          color: Colors.grey,
+          width: 4,
+          zIndex: 1,
+        ));
+      }
+
+      // the third-best route in a lighter grey
+      if (allRoutes.length > 2) {
+        _polylines.add(Polyline(
+          polylineId: const PolylineId('alternative_2'),
+          points: allRoutes[2],
+          color: Colors.grey.shade400,
+          width: 4,
+          zIndex: 1,
+        ));
+      }
+    });
+  }
   /// Fits the map camera to show all points in the route.
   void _fitRouteBounds(List<LatLng> points) {
     if (_mapController == null || points.isEmpty) return;
@@ -794,6 +885,72 @@ class _HomePageFinalState extends State<HomePageFinal> {
       _polylines.clear();
     });
   }
+  //Function to alternate optimal routes
+  Future<void> _drawMultipleOptimalRoutes(
+      List<List<Map<String, dynamic>>> optimalRoutes) async {
+    _polylines.clear();
+    _markers.removeWhere((m) => m.markerId.value.contains('bestStation'));
+
+    // Define distinct colors for the routes
+    final routeColors = [ Colors.blue, const Color.fromARGB(255, 157, 161, 163), const Color.fromARGB(255, 199, 197, 197), ];
+
+    final allRoutePoints = <LatLng>{_currentLocation!, _destinationLocation!};
+    bool anyRouteFailed = false;
+
+    // We use .take(2) here to ensure we only draw the top two routes from the list.
+    final routesToDraw = optimalRoutes.take(3);
+
+    int routeIndex = 0;
+    for (final route in routesToDraw) {
+      final color = routeColors[routeIndex % routeColors.length];
+      final List<LatLng> waypoints = [_currentLocation!];
+
+      int stopIndex = 0;
+      for (final station in route) {
+        waypoints.add(station['position']);
+        allRoutePoints.add(station['position']);
+        _markers.add(Marker(
+          markerId: MarkerId('bestStation_${routeIndex}_${stopIndex}'),
+          position: station['position'],
+          infoWindow: InfoWindow(
+              title: 'Route ${routeIndex + 1}, Stop ${stopIndex + 1}: ${station['name']}'),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+              (BitmapDescriptor.hueBlue + (routeIndex * 40)) % 360),
+        ));
+        stopIndex++;
+      }
+      waypoints.add(_destinationLocation!);
+
+      final List<LatLng> fullRoutePolylinePoints = [];
+      for (var k = 0; k < waypoints.length - 1; k++) {
+        try {
+          final segment = await _getRouteCoordinates(waypoints[k], waypoints[k + 1]);
+          fullRoutePolylinePoints.addAll(segment);
+          if (segment.length <= 2) anyRouteFailed = true;
+          await Future.delayed(const Duration(milliseconds: 500));
+        } catch (e) {
+          anyRouteFailed = true;
+          fullRoutePolylinePoints.addAll([waypoints[k], waypoints[k + 1]]);
+        }
+      }
+
+      _polylines.add(Polyline(
+        polylineId: PolylineId('route_$routeIndex'),
+        points: fullRoutePolylinePoints,
+        color: color,
+        width: 6,
+        zIndex: routesToDraw.length - routeIndex, // Best route on top
+      ));
+      routeIndex++;
+    }
+
+    setState(() {});
+    if (allRoutePoints.isNotEmpty) _fitRouteBounds(allRoutePoints.toList());
+
+    _alertService.showToast(
+        text: 'Displaying top ${routesToDraw.length} charging routes.', icon: Icons.check);
+    if(anyRouteFailed) _alertService.showToast(text: "Could not fetch all route details.", icon: Icons.warning);
+  }
 
   Future<void> _optimizeRoute() async {
     if (_currentLocation == null || _destinationLocation == null) {
@@ -824,28 +981,33 @@ class _HomePageFinalState extends State<HomePageFinal> {
             points: routePoints,
             color: Colors.blue,
             width: 5,
+            zIndex: 2,
           ));
           _alertService.showToast(
               text: 'Direct route possible, no charging needed',
               icon: Icons.check);
         });
+        await _displayAlternativeRoutes(_currentLocation!, _destinationLocation!);
+
       } else {
         print('Need charging stations for route');
-        final optimalRoute = _findOptimalChargingRoute(
+
+        // Call the refactored function. It now returns a sorted list.
+        final optimalRoutes = _findOptimalChargingRoute(
             _currentLocation!, _destinationLocation!, initialRange);
 
-        if (optimalRoute.isEmpty) {
+        if (optimalRoutes.isEmpty) {
           _alertService.showToast(
               text: 'No viable route found with current battery',
               icon: Icons.error);
+          setState(() => _isLoading = false);
           return;
         }
 
-        await _drawOptimalRoute(optimalRoute);
-        final stationNames =
-            optimalRoute.map((station) => station['name']).join(' → ');
-        _alertService.showToast(
-            text: 'Route optimized: $stationNames', icon: Icons.check);
+        await _drawMultipleOptimalRoutes(optimalRoutes);
+
+
+
       }
     } catch (e) {
       print('Error optimizing route: $e');
