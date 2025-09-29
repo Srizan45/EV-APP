@@ -137,7 +137,7 @@ class _HomePageFinalState extends State<HomePageFinal> {
           position: station['position'],
           infoWindow: InfoWindow(
             title: station['name'],
-            snippet: 'Slots: ${station['slots']}, Power: ${station['powerKW']} kW',
+            snippet: 'Slots: ${station['slots']}, Charging Rate: ${station['powerKW']} kW',
           ),
         ),
       );
